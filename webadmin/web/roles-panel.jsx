@@ -1,24 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 Diridium Technologies Inc.
 // SPDX-License-Identifier: MPL-2.0
 
-/*
- * "Role-Based Access Control" settings tab — the web port of RbacSettingsPanel.
- *
- * Roles table (ID/Name/Description, single-select, double-click = edit) over a
- * User-Role Assignments table (User ID/Username/Assigned Role, resolved with
- * the same N+1 getUserRole calls as Swing, "(none)" when unassigned). All
- * mutations are committed via REST the moment each dialog confirms — the tab
- * never participates in the settings view's Save/dirty tracking (it registers
- * no save()), and says so up front via the italic notice.
- *
- * Task pane = Refresh only (settings_Role-Based Access Control/doRefresh →
- * "View Roles"); the Add/Edit/Delete and Assign/Remove buttons are gated on
- * checkTask(…, 'doSave') → "Manage Roles" (the Config Map Add Row precedent).
- * When the users list is denied (listing users needs manageUsers, which a
- * View-Roles-only user lacks) the roles table still renders and the
- * assignments area degrades to a hint — same partial panel as Swing.
- */
-
 import {
     IMMEDIATE_NOTICE, ROLE_COLUMNS, USER_COLUMNS, NONE_ROLE_LABEL,
     MSG_CATALOG_NOT_LOADED, MSG_SELECT_ROLE_EDIT, MSG_SELECT_ROLE_DELETE,
@@ -38,8 +20,6 @@ export function registerRolesPanel(platform, api) {
     const ui = platform.ui;
     const RoleEditor = makeRoleEditor(platform);
 
-    /* Role picker for Assign Role (Swing's showInputDialog with the role-name
-       combo). Resolves the chosen role id, or null on cancel. */
     function pickRole(roles, username) {
         return new Promise((resolve) => {
             const sel = ui.select(
@@ -56,8 +36,6 @@ export function registerRolesPanel(platform, api) {
         });
     }
 
-    /* The assignment-impact preview (Swing's confirmAssignment): monospace body
-       with the exact Swing text, OK/Cancel. */
     function confirmAssignment(username, currentRoleName, role, channelMap) {
         const preview = buildAssignmentPreview(username, currentRoleName, role, channelMap);
         return new Promise((resolve) => {
@@ -82,23 +60,20 @@ export function registerRolesPanel(platform, api) {
     function RolesPanel({ setTasks }) {
         const [roles, setRoles] = React.useState([]);
         const [users, setUsers] = React.useState([]);
-        const [usersError, setUsersError] = React.useState(null); // users.list denied/failed
-        const [userRoles, setUserRoles] = React.useState({});     // userId -> role name | null
-        const [catalog, setCatalog] = React.useState(null);       // Set<string> | null (not loaded)
-        const [extGroups, setExtGroups] = React.useState({});     // permission -> publishing plugin
-        const [channels, setChannels] = React.useState([]);       // [{id, name}] live, wire order
+        const [usersError, setUsersError] = React.useState(null);
+        const [userRoles, setUserRoles] = React.useState({});
+        const [catalog, setCatalog] = React.useState(null);
+        const [extGroups, setExtGroups] = React.useState({});
+        const [channels, setChannels] = React.useState([]);
         const [selectedRoleId, setSelectedRoleId] = React.useState(null);
         const [selectedUserId, setSelectedUserId] = React.useState(null);
-        const [editor, setEditor] = React.useState(null);         // { role: Role|null } while open
+        const [editor, setEditor] = React.useState(null);
         const [loading, setLoading] = React.useState(true);
 
         const loadingRef = React.useRef(false);
         const pendingRef = React.useRef(false);
 
         const load = React.useCallback(async () => {
-            // Overlap guard (Swing's AtomicBoolean pair): drop concurrent
-            // refreshes, but remember one requested mid-flight so a
-            // post-mutation refresh is never silently lost.
             if (loadingRef.current) { pendingRef.current = true; return; }
             loadingRef.current = true;
             setLoading(true);
@@ -112,19 +87,13 @@ export function registerRolesPanel(platform, api) {
                 ]);
                 if (rolesRes.status === 'fulfilled') setRoles(rolesRes.value);
                 else ui.toast(`Failed to load roles: ${rolesRes.reason && rolesRes.reason.message || rolesRes.reason}`, 'error');
-                // Catalog failure leaves it null: Add/Edit stay guarded by
-                // MSG_CATALOG_NOT_LOADED instead of opening an editor that
-                // would wipe permissions.
+
                 if (permsRes.status === 'fulfilled') setCatalog(permsRes.value);
-                // Grouping is cosmetic — failure just leaves plugin permissions
-                // under "Other".
                 if (extGroupsRes.status === 'fulfilled') setExtGroups(extGroupsRes.value);
                 if (channelsRes.status === 'fulfilled') {
                     setChannels(mapEntries(channelsRes.value).map(([id, name]) => ({ id, name })));
                 }
                 if (usersRes.status === 'fulfilled') {
-                    // N+1 like Swing: resolve each user's assigned role;
-                    // per-user failures tolerated (rendered as "(none)").
                     const list = usersRes.value;
                     const names = {};
                     await Promise.all(list.map(async (u) => {
@@ -139,8 +108,6 @@ export function registerRolesPanel(platform, api) {
                     setUserRoles(names);
                     setUsersError(null);
                 } else {
-                    // Partial panel: keep the roles table working when the user
-                    // list is denied (needs manageUsers) — Swing parity.
                     setUsers([]);
                     setUserRoles({});
                     setUsersError(String(usersRes.reason && usersRes.reason.message || usersRes.reason));
@@ -152,16 +119,179 @@ export function registerRolesPanel(platform, api) {
             }
         }, []);
 
+        const canManage = platform.checkTask(RBAC_GROUP, 'doSave');
+
+        function escapeXml(str) {
+            return String(str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        }
+
+        // Funzione di Export robusta per catturare tutti i permessi (Array, Set, Object, Map)
+        const exportXml = React.useCallback(() => {
+            if (roles.length === 0) {
+                ui.toast('No roles to export.', 'warn');
+                return;
+            }
+            let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<roles>\n';
+            roles.forEach((r) => {
+                xml += `  <role>\n`;
+                xml += `    <name>${escapeXml(r.name)}</name>\n`;
+                xml += `    <description>${escapeXml(r.description)}</description>\n`;
+
+                xml += `    <permissions>\n`;
+                const perms = r.permissions;
+                if (perms) {
+                    let permList = [];
+                    if (Array.isArray(perms)) {
+                        permList = perms;
+                    } else if (perms instanceof Set) {
+                        permList = Array.from(perms);
+                    } else if (typeof perms === 'object') {
+                        permList = Object.entries(perms)
+                            .filter(([k, v]) => v === true || v === 'true' || typeof v !== 'boolean')
+                            .map(([k]) => k);
+                    }
+                    permList.forEach((p) => {
+                        xml += `      <permission>${escapeXml(p)}</permission>\n`;
+                    });
+                }
+                xml += `    </permissions>\n`;
+
+                if (r.channels) {
+                    xml += `    <channels>\n`;
+                    const chList = Array.isArray(r.channels) ? r.channels : (r.channels instanceof Set ? Array.from(r.channels) : Object.keys(r.channels));
+                    chList.forEach((c) => {
+                        xml += `      <channel>${escapeXml(c)}</channel>\n`;
+                    });
+                    xml += `    </channels>\n`;
+                }
+
+                xml += `  </role>\n`;
+            });
+            xml += '</roles>';
+
+            const blob = new Blob([xml], { type: 'application/xml;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', 'rbac-roles-export.xml');
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            ui.toast('Roles and permissions exported successfully.', 'success');
+        }, [roles, ui]);
+
+        // Funzione di Import per leggere tutti i permessi e gestire i conflitti
+        const importXml = React.useCallback(() => {
+            if (!catalog || catalog.size === 0) {
+                ui.toast(MSG_CATALOG_NOT_LOADED, 'warn');
+                return;
+            }
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.xml,application/xml';
+            input.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    try {
+                        const text = event.target.result;
+                        const parser = new DOMParser();
+                        const xmlDoc = parser.parseFromString(text, 'text/xml');
+
+                        if (xmlDoc.querySelector('parsererror')) {
+                            throw new Error('Invalid XML format.');
+                        }
+
+                        const roleNodes = xmlDoc.getElementsByTagName('role');
+                        if (roleNodes.length === 0) {
+                            ui.toast('No roles found in XML.', 'warn');
+                            return;
+                        }
+
+                        for (let i = 0; i < roleNodes.length; i++) {
+                            const rNode = roleNodes[i];
+                            const nameNode = rNode.getElementsByTagName('name')[0];
+                            const descNode = rNode.getElementsByTagName('description')[0];
+                            const permNodes = rNode.getElementsByTagName('permission');
+                            const channelNodes = rNode.getElementsByTagName('channel');
+
+                            if (!nameNode) continue;
+                            const name = nameNode.textContent.trim();
+                            const description = descNode ? descNode.textContent.trim() : '';
+
+                            const permissions = [];
+                            for (let j = 0; j < permNodes.length; j++) {
+                                permissions.push(permNodes[j].textContent.trim());
+                            }
+
+                            const channels = [];
+                            for (let j = 0; j < channelNodes.length; j++) {
+                                channels.push(channelNodes[j].textContent.trim());
+                            }
+
+                            const existingRole = roles.find((r) => r.name === name);
+                            const roleData = {
+                                name,
+                                description,
+                                permissions,
+                                ...(channels.length > 0 ? { channels } : {})
+                            };
+
+                            if (existingRole) {
+                                if (existingRole.isAdmin) {
+                                    ui.toast(`Skipping admin role '${name}': cannot overwrite admin role.`, 'warn');
+                                    continue;
+                                }
+                                const overwrite = await ui.confirmDialog(
+                                    'Role Already Exists',
+                                    `Role '${name}' already exists. Do you want to overwrite it?`,
+                                    { okLabel: 'Overwrite', cancelLabel: 'Keep Existing' }
+                                );
+                                if (!overwrite) continue;
+
+                                await api.updateRole(existingRole.id, {
+                                    id: existingRole.id,
+                                    ...roleData
+                                });
+                            } else {
+                                await api.createRole(roleData);
+                            }
+                        }
+                        ui.toast('Import completed successfully.', 'success');
+                        load();
+                    } catch (err) {
+                        ui.toast(`Import failed: ${err.message || err}`, 'error');
+                    }
+                };
+                reader.readAsText(file);
+            };
+            input.click();
+        }, [catalog, roles, api, load, ui]);
+
         React.useEffect(() => {
             load();
-            // Refresh is the ONLY rail task — no Save participation (the panel
-            // never calls setSave, so it can't trip the settings dirty tracking).
-            setTasks('Role-Based Access Control Tasks', [
-                ui.taskButton('Refresh', 'refresh', () => load(), { task: 'doRefresh', group: RBAC_GROUP })
-            ]);
-        }, [load, setTasks]);
+        }, [load]);
 
-        const canManage = platform.checkTask(RBAC_GROUP, 'doSave');
+        React.useEffect(() => {
+            const tasks = [
+                ui.taskButton('Refresh', 'refresh', () => load(), { task: 'doRefresh', group: RBAC_GROUP })
+            ];
+            if (canManage) {
+                tasks.push(
+                    ui.taskButton('Export XML', 'export', () => exportXml(), { task: 'doRefresh', group: RBAC_GROUP }),
+                    ui.taskButton('Import XML', 'import', () => importXml(), { task: 'doSave', group: RBAC_GROUP })
+                );
+            }
+            setTasks('Role-Based Access Control Tasks', tasks);
+        }, [setTasks, canManage, exportXml, importXml, load, ui]);
+
         const channelMap = React.useMemo(
             () => new Map(channels.map((c) => [c.id, c.name])), [channels]);
         const selectedRole = roles.find((r) => String(r.id) === String(selectedRoleId)) || null;
@@ -175,8 +305,6 @@ export function registerRolesPanel(platform, api) {
             return false;
         };
 
-        // Every mutation: commit, surface engine errors (incl. the server-side
-        // AdminRoleGuard messages) as a toast, always reload.
         async function mutate(call) {
             try {
                 await call();
@@ -201,9 +329,6 @@ export function registerRolesPanel(platform, api) {
 
         async function deleteRole() {
             if (!selectedRole) { ui.toast(MSG_SELECT_ROLE_DELETE, 'warn'); return; }
-            // Identify the admin role by its flag, not its name (it can be
-            // renamed). The server's AdminRoleGuard enforces this too; this is
-            // the friendly client guard.
             if (selectedRole.isAdmin) { ui.toast(MSG_ADMIN_ROLE_CANNOT_DELETE, 'warn'); return; }
             const ok = await ui.confirmDialog(TITLE_CONFIRM_DELETE,
                 deleteRoleConfirmText(selectedRole.name), { danger: true, okLabel: 'Delete' });
@@ -226,16 +351,12 @@ export function registerRolesPanel(platform, api) {
 
         async function removeRole() {
             if (!selectedUser) { ui.toast(MSG_SELECT_USER_REMOVE, 'warn'); return; }
-            // The admin floor (don't strip the last admin) is enforced
-            // server-side by AdminRoleGuard; its message surfaces via mutate().
             const ok = await ui.confirmDialog(TITLE_CONFIRM_REMOVE,
                 removeRoleConfirmText(selectedUser.username), { danger: true, okLabel: 'Remove' });
             if (!ok) return;
             await mutate(() => api.removeUserRole(selectedUser.id));
         }
 
-        // The editor commits like Swing: the dialog closes the moment Apply
-        // passes validation, then the mutation runs (errors toast, panel stays).
         async function applyEditor(built) {
             setEditor(null);
             await mutate(() => built.id != null
