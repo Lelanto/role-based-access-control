@@ -82,14 +82,14 @@ export function registerRolesPanel(platform, api) {
     function RolesPanel({ setTasks }) {
         const [roles, setRoles] = React.useState([]);
         const [users, setUsers] = React.useState([]);
-        const [usersError, setUsersError] = React.useState(null);
-        const [userRoles, setUserRoles] = React.useState({});
-        const [catalog, setCatalog] = React.useState(null);
-        const [extGroups, setExtGroups] = React.useState({});
-        const [channels, setChannels] = React.useState([]);
+        const [usersError, setUsersError] = React.useState(null); // users.list denied/failed
+        const [userRoles, setUserRoles] = React.useState({});     // userId -> role name | null
+        const [catalog, setCatalog] = React.useState(null);       // Set<string> | null (not loaded)
+        const [extGroups, setExtGroups] = React.useState({});     // permission -> publishing plugin
+        const [channels, setChannels] = React.useState([]);       // [{id, name}] live, wire order
         const [selectedRoleId, setSelectedRoleId] = React.useState(null);
         const [selectedUserId, setSelectedUserId] = React.useState(null);
-        const [editor, setEditor] = React.useState(null);
+        const [editor, setEditor] = React.useState(null);         // { role: Role|null } while open
         const [loading, setLoading] = React.useState(true);
 
         const loadingRef = React.useRef(false);
